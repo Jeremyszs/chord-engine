@@ -1,0 +1,22 @@
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Output files
+result.json
+
+# Sample audio files (keep .gitkeep placeholder)
+samples/*.wav
+samples/*.mp3
+samples/*.flac
+samples/*.ogg
+samples/*.m4a
+
+# BTC model checkpoint binaries (downloaded at Docker build time)
+btc_model/**/*.pt
+btc_model/png/
+
