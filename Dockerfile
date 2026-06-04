@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 user
@@ -21,8 +22,8 @@ WORKDIR /app
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Download BTC model weights before copying the rest — these are too large
-# for git (HF rejects binaries) so we fetch them at build time.
+# Download BTC model weights before switching to non-root user.
+# These are too large for git (HF rejects binaries) so we fetch at build time.
 RUN mkdir -p /app/btc_model/test && \
     curl -L -o /app/btc_model/test/btc_model.pt \
       "https://huggingface.co/jayg996/BTC-ISMIR19/resolve/main/test/btc_model.pt?download=true" && \
@@ -30,5 +31,10 @@ RUN mkdir -p /app/btc_model/test && \
       "https://huggingface.co/jayg996/BTC-ISMIR19/resolve/main/test/btc_model_large_voca.pt?download=true"
 
 COPY --chown=user . /app
+
+# Fix ownership so the non-root user can read everything.
+USER root
+RUN chown -R user:user /app
+USER user
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "7860"]
