@@ -241,7 +241,9 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
     Load BTC chord detector with automatic checkpoint discovery.
 
     Searches for the appropriate checkpoint file in the btc_model/test
-    directory and loads the pretrained model.
+    directory.  If the file is not found locally (e.g. on Hugging Face
+    Spaces where gitignored files are missing), it is downloaded from
+    the jayg996/BTC-ISMIR19 repository using ``huggingface_hub``.
 
     Args:
         device: Device to run model on ("cpu" or "cuda")
@@ -263,12 +265,32 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
     # Search for checkpoint in btc_model/test directory
     checkpoint_path = _btc_model_path / "test" / checkpoint_name
 
+    # If the checkpoint does not exist locally, download it from HF Hub.
+    # This handles the HF Spaces deployment where the .pt files are
+    # gitignored and not bundled in the Docker build context.
     if not checkpoint_path.exists():
-        raise FileNotFoundError(
-            f"BTC model checkpoint not found: {checkpoint_path}\n"
-            f"Please ensure the BTC-ISMIR19 repository is cloned to {MODEL['checkpoint_dir']}\n"
-            f"and contains the pretrained weights in {MODEL['checkpoint_dir']}/test/"
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Local checkpoint not found at %s — downloading from HF Hub.", checkpoint_path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from huggingface_hub import hf_hub_download
+            downloaded = hf_hub_download(
+                repo_id="jayg996/BTC-ISMIR19",
+                filename=f"test/{checkpoint_name}",
+                local_dir=_btc_model_path,
+                local_dir_use_symlinks=False,
+            )
+            # hf_hub_download returns the real path; the file is now on disk.
+            # On HF Spaces the built-in HF_TOKEN provides auth automatically.
+            checkpoint_path = Path(downloaded)
+            logger.info("Downloaded %s successfully.", checkpoint_name)
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"BTC model checkpoint not found: {checkpoint_path}\n"
+                f"Auto-download from Hugging Face Hub also failed: {exc}\n"
+                f"Please ensure the BTC-ISMIR19 repository weights are available."
+            )
 
     # Load and return detector
     detector = ChordDetector(

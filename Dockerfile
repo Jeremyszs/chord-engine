@@ -4,7 +4,6 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
     git \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 user
@@ -22,14 +21,11 @@ WORKDIR /app
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Download BTC model weights before switching to non-root user.
-# These are too large for git (HF rejects binaries) so we fetch at build time.
-RUN mkdir -p /app/btc_model/test && \
-    curl -L -o /app/btc_model/test/btc_model.pt \
-      "https://huggingface.co/jayg996/BTC-ISMIR19/resolve/main/test/btc_model.pt?download=true" && \
-    curl -L -o /app/btc_model/test/btc_model_large_voca.pt \
-      "https://huggingface.co/jayg996/BTC-ISMIR19/resolve/main/test/btc_model_large_voca.pt?download=true"
-
+# The .pt weight files are too large for git (HF rejects binaries) so they
+# are gitignored and NOT present in the Docker build context.  Instead,
+# load_detector() in engine/model.py auto-downloads them from Hugging Face
+# Hub at first use.  The HF_TOKEN env-var is injected automatically by
+# the HF Spaces runtime, so no extra auth configuration is needed.
 COPY --chown=user . /app
 
 # Fix ownership so the non-root user can read everything.
