@@ -243,7 +243,7 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
     Searches for the appropriate checkpoint file in the btc_model/test
     directory.  If the file is not found locally (e.g. on Hugging Face
     Spaces where gitignored files are missing), it is downloaded from
-    the jayg996/BTC-ISMIR19 repository using ``huggingface_hub``.
+    the jayg996/BTC-ISMIR19 GitHub repository.
 
     Args:
         device: Device to run model on ("cpu" or "cuda")
@@ -254,7 +254,7 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
         Initialized ChordDetector instance
 
     Raises:
-        FileNotFoundError: If checkpoint file is not found
+        FileNotFoundError: If checkpoint file cannot be found or downloaded.
     """
     # Determine checkpoint filename
     if large_voca:
@@ -265,30 +265,25 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
     # Search for checkpoint in btc_model/test directory
     checkpoint_path = _btc_model_path / "test" / checkpoint_name
 
-    # If the checkpoint does not exist locally, download it from HF Hub.
+    # If the checkpoint does not exist locally, download it from GitHub.
     # This handles the HF Spaces deployment where the .pt files are
     # gitignored and not bundled in the Docker build context.
     if not checkpoint_path.exists():
         import logging
+        import urllib.request
         logger = logging.getLogger(__name__)
-        logger.info("Local checkpoint not found at %s — downloading from HF Hub.", checkpoint_path)
+        logger.info("Local checkpoint not found at %s — downloading from GitHub.", checkpoint_path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            from huggingface_hub import hf_hub_download
-            downloaded = hf_hub_download(
-                repo_id="jayg996/BTC-ISMIR19",
-                filename=f"test/{checkpoint_name}",
-                local_dir=_btc_model_path,
-                local_dir_use_symlinks=False,
-            )
-            # hf_hub_download returns the real path; the file is now on disk.
-            # On HF Spaces the built-in HF_TOKEN provides auth automatically.
-            checkpoint_path = Path(downloaded)
-            logger.info("Downloaded %s successfully.", checkpoint_name)
+            repo_base = "https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test"
+            url = f"{repo_base}/{checkpoint_name}"
+            logger.info("Downloading %s ...", url)
+            urllib.request.urlretrieve(url, checkpoint_path)
+            logger.info("Downloaded %s successfully (%d bytes).", checkpoint_name, checkpoint_path.stat().st_size)
         except Exception as exc:
             raise FileNotFoundError(
                 f"BTC model checkpoint not found: {checkpoint_path}\n"
-                f"Auto-download from Hugging Face Hub also failed: {exc}\n"
+                f"Auto-download from GitHub also failed: {exc}\n"
                 f"Please ensure the BTC-ISMIR19 repository weights are available."
             )
 
