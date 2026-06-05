@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from api.main import app
-from api.models.response import AnalysisResult, ChordSegment, YoutubeUploadResponse
+from api.models.response import AnalysisResult, ChordSegment
 from api.services.job_store import JobStore, job_store as _global_store
 from engine.youtube import validate_youtube_url
 
@@ -54,8 +54,7 @@ def make_wav_bytes(duration_seconds: float = 3, sr: int = 22050) -> bytes:
     return buf.getvalue()
 
 
-def _fake_analysis_result(job_id: str, audio_filename: str = "test.wav", source: str = "upload",
-                          youtube_url: str | None = None) -> dict:
+def _fake_analysis_result(job_id: str, audio_filename: str = "test.wav") -> dict:
     """Return a valid AnalysisResult-shaped dict for testing.
 
     This is what the mocked ``run_pipeline`` will store when it
@@ -99,8 +98,6 @@ def _fake_analysis_result(job_id: str, audio_filename: str = "test.wav", source:
         "raw_chords": None,
         "processing_time_seconds": 0.15,
         "created_at": "2026-06-04T12:00:00.000Z",
-        "source": source,
-        "youtube_url": youtube_url,
     }
 
 
@@ -731,128 +728,83 @@ class TestResultSchema:
 
 
 # ============================================================================
-# YouTube endpoint tests
+# YouTube info endpoint tests  (GET /api/v1/youtube/info)
 # ============================================================================
 
 
-def _fake_youtube_metadata(url: str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ") -> dict:
-    """Return a fake YouTube metadata dict matching get_video_metadata."""
-    return {
-        "title": "Never Gonna Give You Up",
-        "duration": 212,
-        "uploader": "Rick Astley",
-        "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
-    }
+class TestYoutubeInfoEndpoint:
+    """GET /api/v1/youtube/info — validation and happy path."""
 
+    _FAKE_OEMBED_RESPONSE = b'{"title":"Never Gonna Give You Up","author_name":"Rick Astley","type":"video"}'
 
-_VALID_YOUTUBE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    def test_no_url_returns_422(self, client):
+        """Missing url query param should return 422."""
+        response = client.get("/api/v1/youtube/info")
+        assert response.status_code == 422
 
-
-class TestYoutubeEndpoint:
-    """POST /api/v1/jobs/youtube — validation and happy path."""
-
-    def test_invalid_url_format_returns_400(self, client):
+    def test_invalid_url_returns_400(self, client):
         """An invalid URL should return 400 with error 'invalid_youtube_url'."""
-        response = client.post(
-            "/api/v1/jobs/youtube",
-            json={"url": "not a url at all"},
-        )
+        response = client.get("/api/v1/youtube/info?url=not+a+url")
         assert response.status_code == 400
         body = response.json()
         assert body["error"] == "invalid_youtube_url"
 
-    def test_unavailable_video_returns_400(self, client):
-        """A valid-format URL for an unavailable video should return 400."""
+    def test_valid_url_returns_200_with_metadata(self, client):
+        """A valid YouTube URL should return 200 with video metadata."""
         with unittest.mock.patch(
-            "api.routes.jobs.get_video_metadata",
-            side_effect=ValueError("Video is unavailable, private, or deleted."),
+            "urllib.request.urlopen",
+            return_value=io.BytesIO(self._FAKE_OEMBED_RESPONSE),
         ):
-            response = client.post(
-                "/api/v1/jobs/youtube",
-                json={"url": "https://www.youtube.com/watch?v=xxxxxxxxxxx"},
+            response = client.get(
+                "/api/v1/youtube/info",
+                params={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
             )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["title"] == "Never Gonna Give You Up"
+        assert body["author"] == "Rick Astley"
+        assert body["video_id"] == "dQw4w9WgXcQ"
+        assert body["url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        assert "yt-dlp" in body["download_command"]
+        assert "instructions" in body
+        assert body["thumbnail"] == "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+
+    def test_unavailable_video_returns_400(self, client):
+        """When the oEmbed call fails, should return 400."""
+        with unittest.mock.patch(
+            "urllib.request.urlopen",
+            side_effect=Exception("Video not found"),
+        ):
+            response = client.get(
+                "/api/v1/youtube/info",
+                params={"url": "https://www.youtube.com/watch?v=xxxxxxxxxxx"},
+            )
+
         assert response.status_code == 400
         body = response.json()
         assert body["error"] == "youtube_unavailable"
 
-    def test_valid_url_returns_202_with_job_id(self, client):
-        """A valid YouTube URL should return 202 with job metadata."""
-        with unittest.mock.patch.multiple(
-            "api.routes.jobs",
-            get_video_metadata=unittest.mock.MagicMock(return_value=_fake_youtube_metadata()),
-            run_pipeline_from_youtube=unittest.mock.MagicMock(),
-        ):
-            response = client.post(
-                "/api/v1/jobs/youtube",
-                json={"url": _VALID_YOUTUBE_URL},
-            )
-        assert response.status_code == 202
-        body = response.json()
-        assert "job_id" in body
-        parsed = uuid.UUID(body["job_id"])
-        assert parsed.version == 4
-        assert body["status"] == "queued"
-        assert body["video_title"] == "Never Gonna Give You Up"
-        assert body["video_duration_seconds"] == 212
-        assert body["video_uploader"] == "Rick Astley"
-        assert body["thumbnail_url"] == "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
-        assert body["poll_url"] == f"/api/v1/jobs/{body['job_id']}/status"
-        assert body["result_url"] == f"/api/v1/jobs/{body['job_id']}/result"
-        assert body["message"] == "YouTube audio received. Analysis queued."
+    def test_response_is_validable(self, client):
+        """Response JSON should pass YoutubeInfoResponse.model_validate."""
+        from api.models.response import YoutubeInfoResponse
 
-    def test_valid_url_passes_params_to_job(self, client):
-        """Custom smooth_method, device, and include_raw_chords should be stored."""
-        with unittest.mock.patch.multiple(
-            "api.routes.jobs",
-            get_video_metadata=unittest.mock.MagicMock(return_value=_fake_youtube_metadata()),
-            run_pipeline_from_youtube=unittest.mock.MagicMock(),
+        with unittest.mock.patch(
+            "urllib.request.urlopen",
+            return_value=io.BytesIO(self._FAKE_OEMBED_RESPONSE),
         ):
-            response = client.post(
-                "/api/v1/jobs/youtube",
-                json={
-                    "url": _VALID_YOUTUBE_URL,
-                    "smooth_method": "median",
-                    "device": "cpu",
-                    "include_raw_chords": True,
-                },
+            response = client.get(
+                "/api/v1/youtube/info",
+                params={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
             )
-        assert response.status_code == 202
-        job_id = response.json()["job_id"]
-        record = _global_store.get(job_id)
-        assert record is not None
-        assert record.params["smooth_method"] == "median"
-        assert record.params["include_raw_chords"] is True
 
-    def test_youtube_response_is_validable(self, client):
-        """The response JSON should pass YoutubeUploadResponse.model_validate."""
-        with unittest.mock.patch.multiple(
-            "api.routes.jobs",
-            get_video_metadata=unittest.mock.MagicMock(return_value=_fake_youtube_metadata()),
-            run_pipeline_from_youtube=unittest.mock.MagicMock(),
-        ):
-            response = client.post(
-                "/api/v1/jobs/youtube",
-                json={"url": _VALID_YOUTUBE_URL},
-            )
-        parsed = YoutubeUploadResponse.model_validate(response.json())
-        assert parsed.job_id is not None
+        parsed = YoutubeInfoResponse.model_validate(response.json())
+        assert parsed.video_id == "dQw4w9WgXcQ"
 
-    def test_job_store_source_is_youtube(self, client):
-        """The job record should have source='youtube' and the youtube_url."""
-        with unittest.mock.patch.multiple(
-            "api.routes.jobs",
-            get_video_metadata=unittest.mock.MagicMock(return_value=_fake_youtube_metadata()),
-            run_pipeline_from_youtube=unittest.mock.MagicMock(),
-        ):
-            response = client.post(
-                "/api/v1/jobs/youtube",
-                json={"url": _VALID_YOUTUBE_URL},
-            )
-        job_id = response.json()["job_id"]
-        record = _global_store.get(job_id)
-        assert record is not None
-        assert record.source == "youtube"
-        assert record.youtube_url == _VALID_YOUTUBE_URL
+
+# ============================================================================
+# YouTube URL validation unit tests
+# ============================================================================
 
 
 class TestYoutubeValidation:

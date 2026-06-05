@@ -124,16 +124,6 @@ class AnalysisResult(BaseModel):
         examples=["2026-06-04T10:23:01.482Z"],
     )
 
-    source: Literal["upload", "youtube"] = Field(
-        default="upload",
-        description="Where the audio came from.",
-    )
-
-    youtube_url: str | None = Field(
-        default=None,
-        description="Original YouTube URL. Only present if source is 'youtube'.",
-    )
-
 
 class JobStatus(BaseModel):
     """Current status of an analysis job."""
@@ -213,31 +203,49 @@ class UploadResponse(BaseModel):
     )
 
 
-class YoutubeUploadResponse(UploadResponse):
-    """Immediate response returned after submitting a YouTube URL."""
+class YoutubeInfoResponse(BaseModel):
+    """Response returned by the GET /api/v1/youtube/info endpoint."""
 
-    video_title: str = Field(
+    title: str = Field(
         ...,
         description="Title of the YouTube video.",
         examples=["Never Gonna Give You Up"],
     )
 
-    video_duration_seconds: int = Field(
-        ...,
-        description="Duration of the video in seconds.",
-        examples=[212],
-    )
-
-    video_uploader: str = Field(
+    author: str = Field(
         ...,
         description="Name of the YouTube channel / uploader.",
         examples=["Rick Astley"],
     )
 
-    thumbnail_url: str = Field(
+    thumbnail: str = Field(
         ...,
         description="URL of the video thumbnail image.",
-        examples=["https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"],
+        examples=["https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"],
+    )
+
+    video_id: str = Field(
+        ...,
+        description="11-character YouTube video ID.",
+        examples=["dQw4w9WgXcQ"],
+    )
+
+    url: str = Field(
+        ...,
+        description="Canonical YouTube URL.",
+        examples=["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+    )
+
+    download_command: str = Field(
+        ...,
+        description="Exact yt-dlp command to download the audio as MP3.",
+        examples=['yt-dlp -x --audio-format mp3 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"'],
+    )
+
+    instructions: str = Field(
+        default="Download the audio file using the command above, "
+                "then upload it using POST /api/v1/jobs.",
+        description="Instructions for the user on what to do next.",
     )
 
 

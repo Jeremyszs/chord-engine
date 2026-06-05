@@ -26,8 +26,6 @@ class JobRecord:
     result: dict | None   # The full AnalysisResult dict, once complete
     error: str | None     # Error message if failed
     created_at: datetime
-    source: str = "upload"
-    youtube_url: str | None = None
 
 
 class JobStore:
@@ -41,16 +39,13 @@ class JobStore:
     # Public API
     # ------------------------------------------------------------------
 
-    def create(self, audio_path: str, audio_filename: str, params: dict,
-               source: str = "upload", youtube_url: str | None = None) -> JobRecord:
+    def create(self, audio_path: str, audio_filename: str, params: dict) -> JobRecord:
         """Create a new queued job and return its record.
 
         Args:
             audio_path: Absolute path to the uploaded temp file.
             audio_filename: Original filename from the upload.
             params: Analysis parameters (smooth_method, device, ...).
-            source: ``"upload"`` for file uploads, ``"youtube"`` for YouTube jobs.
-            youtube_url: The original YouTube URL, if applicable.
 
         Returns:
             The newly created JobRecord with status="queued".
@@ -66,8 +61,6 @@ class JobStore:
             result=None,
             error=None,
             created_at=datetime.now(timezone.utc),
-            source=source,
-            youtube_url=youtube_url,
         )
         with self._lock:
             self._jobs[record.job_id] = record

@@ -7,7 +7,6 @@ at every stage for live client feedback.
 
 import asyncio
 import os
-import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -22,9 +21,8 @@ from engine.postprocess import (
     extract_progression,
 )
 from engine.output import build_output
-from engine.youtube import download_audio, get_video_metadata
 from api.services.job_store import job_store
-from config import MODEL, FEATURES, STORAGE
+from config import MODEL, FEATURES
 
 # ---------------------------------------------------------------------------
 # Model cache — the BTC model is expensive to load, so we keep a single
@@ -175,62 +173,7 @@ def _run_stages(job_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# YouTube pipeline (synchronous body)
-# ---------------------------------------------------------------------------
-
-
-def _run_youtube_stages(job_id: str) -> dict:
-    """Synchronous pipeline body for YouTube-sourced jobs.
-
-    Downloads the audio from YouTube, then runs the full analysis pipeline.
-    """
-    record = job_store.get(job_id)
-    if record is None:
-        raise ValueError(f"Job not found: {job_id}")
-
-    device = record.params.get("device", "cpu")
-    smooth_method = record.params.get("smooth_method", "hmm")
-    include_raw = record.params.get("include_raw_chords", False)
-    youtube_url = record.youtube_url or record.audio_path
-
-    # ---- 5% - Validate URL (already done by the endpoint) -----------------
-    job_store.update_progress(job_id, 5, "Validating YouTube URL...")
-
-    # ---- 15% - Fetch metadata --------------------------------------------
-    job_store.update_progress(job_id, 15, "Fetching video metadata...")
-    metadata = get_video_metadata(youtube_url)
-
-    # ---- 28% - Download audio ---------------------------------------------
-    job_store.update_progress(job_id, 28, "Downloading audio from YouTube...")
-    temp_dir = tempfile.mkdtemp(dir=STORAGE["tmp_dir"], prefix="youtube-")
-    downloaded_path = download_audio(youtube_url, temp_dir)
-
-    try:
-        # ---- 40%+ - Run analysis -----------------------------------------
-        result = _run_analysis_stages(
-            job_id=job_id,
-            audio_path=downloaded_path,
-            audio_filename=f"{metadata['title']}.mp3",
-            device=device,
-            smooth_method=smooth_method,
-            include_raw=include_raw,
-            progress_offset=40,
-        )
-
-        # Attach YouTube-specific fields
-        record = job_store.get(job_id)
-        result["source"] = record.source if record else "youtube"
-        result["youtube_url"] = record.youtube_url if record else None
-
-    finally:
-        # Always remove the downloaded audio and temp directory
-        _cleanup_dir(temp_dir)
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Async wrappers
+# Async wrapper
 # ---------------------------------------------------------------------------
 
 
@@ -241,18 +184,6 @@ async def run_pipeline(job_id: str) -> None:
         job_id: Identifies the job to process.
     """
     await _run_async_wrapper(job_id, _run_stages)
-
-
-async def run_pipeline_from_youtube(job_id: str) -> None:
-    """Run the full chord-engine pipeline for a YouTube-sourced job.
-
-    Steps: validate URL → fetch metadata → download audio → analyse.
-    The downloaded MP3 is cleaned up in a ``finally`` block.
-
-    Args:
-        job_id: Identifies the job to process.
-    """
-    await _run_async_wrapper(job_id, _run_youtube_stages)
 
 
 async def _run_async_wrapper(job_id: str, stages_fn) -> None:
@@ -304,12 +235,3 @@ async def _run_async_wrapper(job_id: str, stages_fn) -> None:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _cleanup_dir(dir_path: str) -> None:
-    """Recursively delete a directory, swallowing errors."""
-    import shutil
-    try:
-        shutil.rmtree(dir_path, ignore_errors=True)
-    except Exception:
-        pass

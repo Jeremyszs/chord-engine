@@ -14,17 +14,14 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Uplo
 from fastapi.responses import JSONResponse
 
 from config import API, STORAGE
-from api.models.request import YoutubeRequest
 from api.models.response import (
     AnalysisResult,
     ErrorResponse,
     JobStatus,
     UploadResponse,
-    YoutubeUploadResponse,
 )
 from api.services.job_store import JobRecord, job_store
-from api.services.pipeline import run_pipeline, run_pipeline_from_youtube
-from engine.youtube import validate_youtube_url, get_video_metadata
+from api.services.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -167,89 +164,7 @@ async def create_job(
 
 
 # ---------------------------------------------------------------------------
-# Endpoint 2 — POST /api/v1/jobs/youtube
-# ---------------------------------------------------------------------------
-
-
-@router.post("/youtube", response_model=YoutubeUploadResponse, status_code=202)
-async def create_youtube_job(
-    background_tasks: BackgroundTasks,
-    body: YoutubeRequest,
-):
-    """Analyse audio from a YouTube video.
-
-    Accepts a YouTube URL in a JSON body.  The server fetches the video
-    metadata, downloads the audio, and runs the full chord analysis
-    pipeline.  Returns immediately (HTTP 202) with a ``job_id``.  The
-    client should poll ``GET /api/v1/jobs/{job_id}/status`` to track
-    progress and ``GET /api/v1/jobs/{job_id}/result`` to retrieve the
-    completed analysis.
-
-    Supported URL formats:
-
-    * ``https://www.youtube.com/watch?v=XXXXXXXXXXX``
-    * ``https://youtu.be/XXXXXXXXXXX``
-    * ``https://music.youtube.com/watch?v=XXXXXXXXXXX``
-    * ``https://www.youtube.com/shorts/XXXXXXXXXXX``
-
-    Video length is limited to **10 minutes** to prevent abuse and
-    excessive processing time.
-
-    Errors:
-    - ``400`` ``invalid_youtube_url`` — URL does not match a supported
-      YouTube format.
-    - ``400`` ``youtube_unavailable`` — video is private, deleted,
-      unavailable, or exceeds the 10-minute limit.
-    """
-    # --- Validate URL format ------------------------------------------------
-    if not validate_youtube_url(body.url):
-        return _error(
-            400,
-            "invalid_youtube_url",
-            "URL must be a valid YouTube link.",
-        )
-
-    # --- Fetch metadata (validates availability & duration) ------------------
-    try:
-        metadata = get_video_metadata(body.url)
-    except ValueError as exc:
-        return _error(
-            400,
-            "youtube_unavailable",
-            str(exc),
-        )
-
-    # --- Create job ---------------------------------------------------------
-    params = {
-        "smooth_method": body.smooth_method,
-        "device": body.device,
-        "include_raw_chords": body.include_raw_chords,
-    }
-    record = job_store.create(
-        audio_path=body.url,  # pipeline uses this to know where to download from
-        audio_filename=f"{metadata['title']}.mp3",
-        params=params,
-        source="youtube",
-        youtube_url=body.url,
-    )
-
-    # --- Launch pipeline ----------------------------------------------------
-    background_tasks.add_task(run_pipeline_from_youtube, job_id=record.job_id)
-
-    return YoutubeUploadResponse(
-        job_id=record.job_id,
-        message="YouTube audio received. Analysis queued.",
-        poll_url=f"/api/v1/jobs/{record.job_id}/status",
-        result_url=f"/api/v1/jobs/{record.job_id}/result",
-        video_title=metadata["title"],
-        video_duration_seconds=metadata["duration"],
-        video_uploader=metadata["uploader"],
-        thumbnail_url=metadata["thumbnail"],
-    )
-
-
-# ---------------------------------------------------------------------------
-# Endpoint 3 — GET /api/v1/jobs/{job_id}/status
+# Endpoint 2 — GET /api/v1/jobs/{job_id}/status
 # ---------------------------------------------------------------------------
 
 
