@@ -5,15 +5,22 @@ using yt-dlp. Integrates with the existing engine by producing an MP3
 file that ``engine/loader.py`` can load normally.
 """
 
+import importlib.metadata
+import logging
 import os
 import re
+import time
 from typing import Final
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _MAX_DURATION_SECONDS: Final[int] = 600  # 10 minutes
+_MAX_RETRIES: Final[int] = 3
+_RETRY_DELAY_SECONDS: Final[float] = 2.0
 
 # Regex that matches all supported YouTube URL formats.
 _YOUTUBE_RE: Final[re.Pattern] = re.compile(
@@ -23,6 +30,18 @@ _YOUTUBE_RE: Final[re.Pattern] = re.compile(
     r"([a-zA-Z0-9_-]{11})"
     r"(?:[?&#]\S*)?$"
 )
+
+# Shared yt-dlp options used for both metadata and download.
+# The 'android' client avoids the "Sign in to confirm you're not a bot" wall
+# that plagues cloud/containerised environments (HF Spaces, etc.).
+_BASE_OPTS: Final[dict] = {
+    "quiet": True,
+    "no_warnings": True,
+    "extractor_args": {"youtube": {"client": ["android"]}},
+    "extractor_retries": 3,
+    "file_access_retries": 3,
+    "retries": 5,
+}
 
 # ---------------------------------------------------------------------------
 # URL validation
@@ -63,9 +82,9 @@ def validate_youtube_url(url: str) -> bool:
 def get_video_metadata(url: str) -> dict:
     """Fetch metadata for a YouTube video **without** downloading it.
 
-    Uses yt-dlp in quiet extract-info mode.  Raises if the video is
-    unavailable, private, deleted, or if its duration exceeds the
-    10-minute limit.
+    Uses yt-dlp in quiet extract-info mode.  Retries up to 3 times on
+    transient SSL / network errors.  Raises if the video is unavailable,
+    private, deleted, or if its duration exceeds the 10-minute limit.
 
     Args:
         url: A valid YouTube URL (call :func:`validate_youtube_url` first).
@@ -86,21 +105,41 @@ def get_video_metadata(url: str) -> dict:
     import yt_dlp
 
     ydl_opts: dict = {
-        "quiet": True,
-        "no_warnings": True,
+        **_BASE_OPTS,
         # Do **not** download anything — only extract info.
         "extract_flat": False,
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as exc:
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            last_exc = None
+            break  # success
+        except yt_dlp.utils.DownloadError as exc:
+            last_exc = exc
+            err_str = str(exc).lower()
+            # Don't retry on clearly permanent errors.
+            if "private" in err_str or "deleted" in err_str or "unavailable" in err_str:
+                break
+            logger.warning(
+                "yt-dlp metadata attempt %d/%d failed: %s", attempt, _MAX_RETRIES, exc
+            )
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY_SECONDS * attempt)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "yt-dlp metadata attempt %d/%d failed: %s", attempt, _MAX_RETRIES, exc
+            )
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY_SECONDS * attempt)
+
+    if last_exc is not None:
         raise ValueError(
             "Video is unavailable, private, or deleted."
-        ) from exc
-    except Exception as exc:
-        raise ValueError(str(exc)) from exc
+        ) from last_exc
 
     if info is None:
         raise ValueError("Could not retrieve video metadata.")
@@ -130,7 +169,8 @@ def download_audio(url: str, output_dir: str) -> str:
 
     Uses yt-dlp with the FFmpeg audio extract post-processor to produce
     a 192 kbps MP3 file.  The file is saved into *output_dir* with the
-    video title as its filename.
+    video ID as its filename for predictability.  Retries up to 3 times
+    on transient network / SSL errors.
 
     Args:
         url: A valid YouTube URL.
@@ -152,6 +192,7 @@ def download_audio(url: str, output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
 
     ydl_opts: dict = {
+        **_BASE_OPTS,
         "format": "bestaudio/best",
         # Use the stable video ID in the filename to avoid issues with
         # special characters in titles and cross-platform sanitisation.
@@ -163,17 +204,28 @@ def download_audio(url: str, output_dir: str) -> str:
                 "preferredquality": "192",
             }
         ],
-        "quiet": True,
-        "no_warnings": True,
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except Exception as exc:
+    last_exc: Exception | None = None
+    info: dict | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            last_exc = None
+            break  # success
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "yt-dlp download attempt %d/%d failed: %s", attempt, _MAX_RETRIES, exc
+            )
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY_SECONDS * attempt)
+
+    if last_exc is not None:
         raise RuntimeError(
-            f"Failed to download audio from YouTube: {exc}"
-        ) from exc
+            f"Failed to download audio from YouTube: {last_exc}"
+        ) from last_exc
 
     if info is None:
         raise RuntimeError("YouTube download returned no info.")

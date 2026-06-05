@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
     git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 user
@@ -15,11 +16,16 @@ ENV TORCH_HOME=/tmp/torch_cache
 ENV TRANSFORMERS_CACHE=/tmp/transformers_cache
 ENV XDG_CACHE_HOME=/tmp/cache
 ENV TMPDIR=/tmp
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 WORKDIR /app
 
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
+
+# Keep yt-dlp at the latest version (YouTube's anti-bot measures evolve
+# constantly — old versions get blocked quickly).
+RUN pip install --no-cache-dir --upgrade yt-dlp
 
 # The .pt weight files are too large for git (HF rejects binaries) so they
 # are gitignored and NOT present in the Docker build context.  Instead,
