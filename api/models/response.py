@@ -203,52 +203,6 @@ class UploadResponse(BaseModel):
     )
 
 
-class YoutubeInfoResponse(BaseModel):
-    """Response returned by the GET /api/v1/youtube/info endpoint."""
-
-    title: str = Field(
-        ...,
-        description="Title of the YouTube video.",
-        examples=["Never Gonna Give You Up"],
-    )
-
-    author: str = Field(
-        ...,
-        description="Name of the YouTube channel / uploader.",
-        examples=["Rick Astley"],
-    )
-
-    thumbnail: str = Field(
-        ...,
-        description="URL of the video thumbnail image.",
-        examples=["https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"],
-    )
-
-    video_id: str = Field(
-        ...,
-        description="11-character YouTube video ID.",
-        examples=["dQw4w9WgXcQ"],
-    )
-
-    url: str = Field(
-        ...,
-        description="Canonical YouTube URL.",
-        examples=["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
-    )
-
-    download_command: str = Field(
-        ...,
-        description="Exact yt-dlp command to download the audio as MP3.",
-        examples=['yt-dlp -x --audio-format mp3 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"'],
-    )
-
-    instructions: str = Field(
-        default="Download the audio file using the command above, "
-                "then upload it using POST /api/v1/jobs.",
-        description="Instructions for the user on what to do next.",
-    )
-
-
 class ErrorResponse(BaseModel):
     """Standard error body returned on all API failures."""
 

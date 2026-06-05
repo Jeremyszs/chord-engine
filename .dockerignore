@@ -15,6 +15,5 @@ result.json
 .env
 .env.*
 eval.py
-cookies.txt
 
 # Keep btc_model/ — weights must be bundled in the image

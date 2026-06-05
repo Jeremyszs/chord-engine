@@ -19,7 +19,3 @@ samples/*.m4a
 # BTC model checkpoint binaries (downloaded at Docker build time)
 btc_model/**/*.pt
 btc_model/png/
-
-# YouTube cookies (NEVER commit these — set as HF Secret instead)
-cookies.txt
-*.cookies.txt

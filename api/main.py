@@ -24,7 +24,7 @@ from api.middleware.errors import (
     http_exception_handler,
     validation_error_handler,
 )
-from api.routes import health, jobs, youtube
+from api.routes import health, jobs
 from config import API
 from api.services.job_store import job_store
 
@@ -130,7 +130,6 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 app.include_router(health.router)
 app.include_router(jobs.router)
-app.include_router(youtube.router)
 
 
 # ---------------------------------------------------------------------------
