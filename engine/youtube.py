@@ -1,18 +1,17 @@
 """YouTube audio download and validation for the chord-engine pipeline.
 
-Provides URL validation, metadata fetching, and audio download services
-using yt-dlp with browser impersonation to bypass bot detection on
-cloud IPs (HF Spaces, etc.).
-
+Provides URL validation, metadata fetching, and audio download services.
 Integrates with the existing engine by producing an MP3 file that
 ``engine/loader.py`` can load normally.
+
+The primary download mechanism is **pytubefix** (a maintained fork of
+pytube that fixes YouTube API changes).  **yt-dlp** serves as a fallback
+if pytubefix fails.
 """
 
 import logging
 import os
 import re
-import subprocess
-import sys
 import time
 from typing import Final
 
@@ -23,8 +22,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MAX_DURATION_SECONDS: Final[int] = 600  # 10 minutes
-_MAX_RETRIES: Final[int] = 2
-_RETRY_DELAY_SECONDS: Final[float] = 3.0
+_MAX_RETRIES: Final[int] = 3
+_RETRY_DELAY: Final[float] = 2.0
 
 # Regex that matches all supported YouTube URL formats.
 _YOUTUBE_RE: Final[re.Pattern] = re.compile(
@@ -33,16 +32,6 @@ _YOUTUBE_RE: Final[re.Pattern] = re.compile(
     r"(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)"
     r"([a-zA-Z0-9_-]{11})"
     r"(?:[?&#]\S*)?$"
-)
-
-# Minimal CONSENT cookie to bypass YouTube's consent/bot wall.
-# The "YES+cb" value is what YouTube sets when a user accepts.
-_COOKIES_PATH: Final[str] = "/tmp/yt-cookies.txt"
-_MINIMAL_COOKIES: Final[str] = (
-    "# Netscape HTTP Cookie File\n"
-    ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb\n"
-    ".youtube.com\tTRUE\t/\tTRUE\t2147483647\t__Secure-3PSID\t\n"
-    ".youtube.com\tTRUE\t/\tTRUE\t2147483647\t__Secure-3PAPISID\t\n"
 )
 
 # ---------------------------------------------------------------------------
@@ -77,129 +66,113 @@ def validate_youtube_url(url: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Cookie file
+# pytubefix helper
 # ---------------------------------------------------------------------------
 
 
-def _ensure_cookies() -> str:
-    """Write a minimal CONSENT cookie file if it doesn't exist yet."""
-    if not os.path.isfile(_COOKIES_PATH):
-        try:
-            with open(_COOKIES_PATH, "w") as f:
-                f.write(_MINIMAL_COOKIES)
-        except OSError:
-            pass
-    return _COOKIES_PATH
+def _extract_pytubefix(url: str, output_dir: str | None = None) -> dict | None:
+    """Extract metadata (and optionally download audio) using pytubefix.
 
+    pytubefix uses a completely different implementation from yt-dlp —
+    it directly mimics the YouTube web client's cipher and API calls,
+    which often works when yt-dlp gets blocked.
 
-# ---------------------------------------------------------------------------
-# Python API extraction with curl_cffi impersonation
-# ---------------------------------------------------------------------------
-
-
-def _extract_with_curl_cffi(url: str, download: bool = False,
-                            output_dir: str | None = None) -> dict | None:
-    """Extract video info using yt-dlp's Python API with ``curl_cffi``.
-
-    ``curl_cffi`` provides **browser-level TLS fingerprint impersonation**.
-    yt-dlp will use it when available, making requests look like they
-    come from a real Chrome browser rather than a Python script.
+    Args:
+        url: YouTube video URL.
+        output_dir: If set, also download audio as MP4 and convert.
 
     Returns:
-        Info dict on success, or ``None``.
+        Info dict (title, duration, uploader, thumbnail, and ``_path``
+        if downloaded), or ``None`` on failure.
     """
     try:
-        # Importing curl_cffi registers it with yt-dlp's request system.
-        import curl_cffi  # noqa: F401
-        import yt_dlp
+        from pytubefix import YouTube
+        from pytubefix.cli import on_progress
 
-        _ensure_cookies()
+        result: dict = {}
 
-        # curl_cffi-based options — yt-dlp auto-detects curl_cffi and uses
-        # it for TLS fingerprint impersonation when ``--impersonate`` is set.
-        ydl_opts: dict = {
-            "quiet": True,
-            "no_warnings": True,
-            "cookiefile": _COOKIES_PATH,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "android_music"],
-                    "player_skip": ["webpage", "configs", "js"],
-                }
-            },
-            "impersonate": "chrome",
-            "legacy_server_connect": True,
-            "socket_timeout": 60,
-            "extractor_retries": 2,
-            "geo_bypass": True,
-        }
+        def _build_result(yt: "YouTube") -> dict:
+            return {
+                "title": yt.title or "Unknown",
+                "duration": int(getattr(yt, "length", 0) or 0),
+                "uploader": yt.author or "Unknown",
+                "thumbnail": yt.thumbnail_url or "",
+                "id": yt.video_id,
+            }
 
-        if download:
-            outdir = output_dir or os.environ.get("TMPDIR", "/tmp")
-            os.makedirs(outdir, exist_ok=True)
-            ydl_opts["format"] = "bestaudio/best"
-            ydl_opts["outtmpl"] = os.path.join(outdir, "%(id)s.%(ext)s")
-            ydl_opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
+        if output_dir:
+            # Download audio stream
+            yt = YouTube(url, on_progress_callback=on_progress, use_oauth=False, allow_oauth_cache=False)
+            result = _build_result(yt)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=download)
+            # Get the audio-only stream with the highest bitrate
+            audio_stream = yt.streams.get_audio_only()
+            if not audio_stream:
+                # Fallback: get any progressive stream and we'll convert
+                audio_stream = yt.streams.filter(only_audio=True).first()
+            if not audio_stream:
+                return None
+
+            dl_path = audio_stream.download(output_path=output_dir)
+            result["_path"] = dl_path
+        else:
+            # Metadata only
+            yt = YouTube(url, use_oauth=False, allow_oauth_cache=False)
+            result = _build_result(yt)
+
+        return result
 
     except Exception as exc:
-        logger.warning("curl_cffi extraction failed: %s", exc)
+        logger.debug("pytubefix extraction failed: %s", exc)
         return None
 
 
 # ---------------------------------------------------------------------------
-# Subprocess extraction (fallback)
+# yt-dlp fallback
 # ---------------------------------------------------------------------------
 
 
-def _find_ytdlp() -> str:
-    """Locate the ``yt-dlp`` executable on ``$PATH``."""
-    which_cmd = "where" if sys.platform == "win32" else "which"
-    try:
-        result = subprocess.run(
-            [which_cmd, "yt-dlp"],
-            capture_output=True, text=True, timeout=10,
-        )
-        path = result.stdout.strip().split("\n")[0].strip()
-        if path:
-            return path
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
-    raise RuntimeError("yt-dlp not found on PATH. Install with: pip install yt-dlp")
+def _extract_ytdlp(url: str, download: bool = False,
+                   output_dir: str | None = None) -> dict | None:
+    """Fallback extraction using yt-dlp as a subprocess.
 
-
-def _extract_subprocess(url: str, download: bool = False,
-                        output_dir: str | None = None,
-                        timeout: int = 180) -> dict | None:
-    """Extract video info using yt-dlp CLI subprocess.
-
-    Rotates through multiple player clients on each attempt.
+    Only called when pytubefix fails.  Rotates through iOS, Android,
+    and web player clients across retry attempts.
     """
-    ytdlp = _find_ytdlp()
-    _ensure_cookies()
+    import json
+    import subprocess
+    import sys
 
-    player_clients = ["ios", "android", "android_music"]
+    def _find() -> str:
+        which_cmd = "where" if sys.platform == "win32" else "which"
+        try:
+            result = subprocess.run(
+                [which_cmd, "yt-dlp"],
+                capture_output=True, text=True, timeout=10,
+            )
+            path = result.stdout.strip().split("\n")[0].strip()
+            if path:
+                return path
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        raise RuntimeError("yt-dlp not found")
 
-    last_stderr = ""
+    def _client_for(attempt: int) -> str:
+        return ["ios", "android,android_music", "web"][(attempt - 1) % 3]
+
+    ytdlp = _find()
     for attempt in range(1, _MAX_RETRIES + 1):
-        client = player_clients[(attempt - 1) % len(player_clients)]
+        client = _client_for(attempt)
         cmd = [
             ytdlp,
             "--quiet", "--no-warnings",
-            "--cookies", _COOKIES_PATH,
             "--force-ipv4",
             "--socket-timeout", "30",
             "--extractor-args", f"youtube:player_client={client}",
-            "--extractor-args", "youtube:player_skip=webpage,configs,js",
             "--geo-bypass",
-            "--impersonate", "chrome",
         ]
+        if client != "web":
+            cmd += ["--extractor-args", "youtube:player_skip=webpage,configs,js"]
 
         if download and output_dir:
             os.makedirs(output_dir, exist_ok=True)
@@ -215,35 +188,34 @@ def _extract_subprocess(url: str, download: bool = False,
 
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout,
+                cmd, capture_output=True, text=True,
+                timeout=600 if download else 180,
             )
             if result.returncode == 0:
-                if download:
-                    if output_dir and os.path.isdir(output_dir):
-                        for fname in os.listdir(output_dir):
-                            if fname.endswith(".mp3"):
-                                return {"_path": os.path.join(output_dir, fname)}
+                if download and output_dir:
+                    for fname in os.listdir(output_dir):
+                        if fname.endswith(".mp3"):
+                            return {"_path": os.path.join(output_dir, fname)}
                     return {"_path": ""}
                 if result.stdout.strip():
-                    import json
-                    return json.loads(result.stdout)
+                    info = json.loads(result.stdout)
+                    return info
 
-            last_stderr = result.stderr.strip()[:500]
+            stderr_snippet = result.stderr.strip()[:500]
             logger.warning(
                 "yt-dlp attempt %d/%d (client=%s) rc=%d: %s",
                 attempt, _MAX_RETRIES, client,
-                result.returncode, last_stderr,
+                result.returncode, stderr_snippet,
             )
-
-            if "private" in last_stderr.lower() or "deleted" in last_stderr.lower():
+            if "private" in stderr_snippet.lower() or "deleted" in stderr_snippet.lower():
                 break
             if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY_SECONDS * attempt)
+                time.sleep(_RETRY_DELAY * attempt)
 
         except subprocess.TimeoutExpired:
-            logger.warning("yt-dlp attempt %d/%d (client=%s) timed out", attempt, _MAX_RETRIES, client)
+            logger.warning("yt-dlp attempt %d/%d timed out", attempt, _MAX_RETRIES)
             if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY_SECONDS * attempt)
+                time.sleep(_RETRY_DELAY * attempt)
 
     return None
 
@@ -256,39 +228,31 @@ def _extract_subprocess(url: str, download: bool = False,
 def get_video_metadata(url: str) -> dict:
     """Fetch metadata for a YouTube video **without** downloading it.
 
-    Uses yt-dlp with ``curl_cffi`` for browser TLS impersonation,
-    with a CONSENT cookie to bypass bot detection.  Falls back to
-    subprocess if the Python API fails.
+    Primary method: pytubefix (YouTube web client cipher).
+    Fallback: yt-dlp subprocess with multiple player clients.
 
     Args:
-        url: A valid YouTube URL (call :func:`validate_youtube_url` first).
+        url: A valid YouTube URL.
 
     Returns:
-        A dictionary with keys:
-
-        * **title** — video title.
-        * **duration** — video duration in seconds.
-        * **uploader** — channel / uploader name.
-        * **thumbnail** — URL of the video thumbnail.
+        A dictionary with title, duration, uploader, and thumbnail.
 
     Raises:
-        ValueError:
-            * Video is unavailable, private, or deleted.
-            * Video duration exceeds 10 minutes (600 seconds).
+        ValueError: Video is unavailable/private/deleted or too long.
     """
-    # Strategy 1: Python API with curl_cffi TLS impersonation
-    info = _extract_with_curl_cffi(url, download=False)
+    # Try pytubefix first
+    info = _extract_pytubefix(url, output_dir=None)
 
-    # Strategy 2: subprocess as fallback
+    # Fallback to yt-dlp
     if info is None:
-        logger.warning("curl_cffi approach failed, trying subprocess...")
-        info = _extract_subprocess(url, download=False)
+        logger.warning("pytubefix failed, trying yt-dlp fallback...")
+        info = _extract_ytdlp(url, download=False)
 
     if info is None:
         raise ValueError("Video is unavailable, private, or deleted.")
 
-    duration: int | None = info.get("duration")
-    if duration is not None and duration > _MAX_DURATION_SECONDS:
+    duration: int = info.get("duration", 0)
+    if duration > _MAX_DURATION_SECONDS:
         raise ValueError(
             f"Video too long. Maximum duration is 10 minutes "
             f"(got {duration} seconds)."
@@ -297,58 +261,72 @@ def get_video_metadata(url: str) -> dict:
     return {
         "title": info.get("title", "Unknown"),
         "duration": duration or 0,
-        "uploader": info.get("uploader", info.get("channel", "Unknown")),
-        "thumbnail": info.get("thumbnail", ""),
+        "uploader": info.get("uploader", info.get("author", "Unknown")),
+        "thumbnail": info.get("thumbnail", info.get("thumbnail_url", "")),
     }
 
 
 def download_audio(url: str, output_dir: str) -> str:
     """Download audio from a YouTube video and convert it to MP3.
 
-    Uses yt-dlp with ``curl_cffi`` for browser TLS impersonation.
-    Falls back to subprocess if the Python API fails.
-
-    The file is saved into *output_dir* with the video ID as its
-    filename for predictability.
+    Primary method: pytubefix (downloads audio stream).
+    Fallback: yt-dlp subprocess with FFmpeg conversion.
 
     Args:
         url: A valid YouTube URL.
-        output_dir: Absolute path to a writable directory (e.g. a
-            ``/tmp`` subdirectory).  Will be created if it does not
-            exist.
+        output_dir: Writable directory for the output file.
 
     Returns:
-        Absolute path to the downloaded ``.mp3`` file.  The file is
-        guaranteed to exist on disk when this function returns.
+        Absolute path to the downloaded MP3 file.
 
     Raises:
-        RuntimeError: If the download or conversion fails for any
-            reason (network error, FFmpeg not available, disk full,
-            etc.).
+        RuntimeError: If download fails after all retries.
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # Strategy 1: Python API with curl_cffi impersonation
-    info = _extract_with_curl_cffi(url, download=True, output_dir=output_dir)
-    if info is not None:
-        video_id = info.get("id", "audio")
-        expected = os.path.join(output_dir, f"{video_id}.mp3")
-        if os.path.isfile(expected):
-            return expected
-        # Scan for any mp3
-        for fname in os.listdir(output_dir):
-            if fname.endswith(".mp3"):
-                return os.path.join(output_dir, fname)
+    # Strategy 1: pytubefix
+    info = _extract_pytubefix(url, output_dir=output_dir)
 
-    # Strategy 2: subprocess download (if Python API failed)
-    logger.warning("curl_cffi download failed, trying subprocess...")
-    result = _extract_subprocess(url, download=True, output_dir=output_dir, timeout=300)
-    if result and os.path.isdir(output_dir):
+    if info is not None and info.get("_path"):
+        dl_path = info["_path"]
+        # pytubefix downloads in the original format (usually .mp4 or .webm).
+        # We need to convert to MP3 using FFmpeg.
+        if not dl_path.endswith(".mp3"):
+            import subprocess
+            mp3_path = os.path.join(output_dir, f"{info.get('id', 'audio')}.mp3")
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-i", dl_path, "-vn",
+                     "-acodec", "libmp3lame", "-ab", "192k",
+                     "-y", mp3_path],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if os.path.isfile(mp3_path):
+                    # Remove the original non-mp3 file
+                    try:
+                        os.remove(dl_path)
+                    except OSError:
+                        pass
+                    return mp3_path
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+                logger.warning("FFmpeg conversion failed: %s", exc)
+
+        # If it's already mp3 or conversion failed, return what we have
+        if os.path.isfile(dl_path):
+            return dl_path
+
+    # Strategy 2: yt-dlp fallback
+    logger.warning("pytubefix download failed, trying yt-dlp fallback...")
+    result = _extract_ytdlp(url, download=True, output_dir=output_dir)
+    if result and result.get("_path"):
+        path = result["_path"]
+        if path and os.path.isfile(path):
+            return path
+        # Maybe it's still being processed — scan the dir
         for fname in os.listdir(output_dir):
             if fname.endswith(".mp3"):
                 return os.path.join(output_dir, fname)
 
     raise RuntimeError(
-        "Failed to download audio from YouTube after all retries. "
-        "YouTube may be blocking this server's IP range."
+        "Failed to download audio from YouTube after all retries."
     )

@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Keep yt-dlp at the latest version (YouTube's anti-bot measures evolve
 # constantly — old versions get blocked quickly).
-RUN pip install --no-cache-dir --upgrade yt-dlp curl_cffi pyopenssl
+RUN pip install --no-cache-dir --upgrade yt-dlp
 
 # The .pt weight files are too large for git (HF rejects binaries) so they
 # are gitignored and NOT present in the Docker build context.  Instead,
