@@ -20,3 +20,6 @@ samples/*.m4a
 btc_model/**/*.pt
 btc_model/png/
 
+# YouTube cookies (NEVER commit these — set as HF Secret instead)
+cookies.txt
+*.cookies.txt

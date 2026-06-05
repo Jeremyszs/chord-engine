@@ -1,5 +1,7 @@
 """Configuration for chord-engine - single source of truth for all parameters."""
 
+import os
+
 # Audio processing parameters
 AUDIO = {
     "sample_rate": 22050,
@@ -53,3 +55,10 @@ STORAGE = {
 
 # Output format options
 OUTPUT_FORMAT = "json"  # Default output format for save operations
+
+# YouTube download configuration
+YOUTUBE = {
+    "cookies_path": os.environ.get("YOUTUBE_COOKIES_PATH"),
+    "max_duration_seconds": 600,
+    "audio_quality": "192",
+}

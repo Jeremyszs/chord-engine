@@ -41,4 +41,8 @@ USER root
 RUN chown -R user:user /app
 USER user
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Startup script — reads YOUTUBE_COOKIES secret and writes it to /tmp/cookies.txt
+COPY --chown=user start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]
