@@ -136,7 +136,7 @@ def get_video_metadata(url: str) -> dict:
               (default: 10 minutes / 600 seconds).
             * Network or extraction error from yt-dlp.
     """
-    ydl_opts = _build_ydl_opts(skip_download=True)
+    ydl_opts = _build_ydl_opts(skip_download=True, geo_bypass=True)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -201,13 +201,20 @@ def download_audio(url: str, output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
 
     ydl_opts = _build_ydl_opts(
-        format="bestaudio/best",
+        format="bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         outtmpl=os.path.join(output_dir, "%(id)s.%(ext)s"),
         postprocessors=[{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": str(YT_CFG.get("audio_quality", "192")),
         }],
+        geo_bypass=True,
+        ignoreerrors=False,
+        extractor_args={
+            "youtube": {
+                "skip": ["hls", "dash"],
+            }
+        },
     )
 
     try:
