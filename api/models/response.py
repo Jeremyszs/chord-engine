@@ -124,6 +124,16 @@ class AnalysisResult(BaseModel):
         examples=["2026-06-04T10:23:01.482Z"],
     )
 
+    source: Literal["upload", "youtube"] = Field(
+        default="upload",
+        description="Where the audio came from.",
+    )
+
+    youtube_url: str | None = Field(
+        default=None,
+        description="Original YouTube URL. Only present if source is 'youtube'.",
+    )
+
 
 class JobStatus(BaseModel):
     """Current status of an analysis job."""
@@ -200,6 +210,34 @@ class UploadResponse(BaseModel):
         ...,
         description="Relative URL to fetch the completed analysis result.",
         examples=["/api/v1/jobs/a1b2c3d4/result"],
+    )
+
+
+class YoutubeUploadResponse(UploadResponse):
+    """Immediate response returned after submitting a YouTube URL."""
+
+    video_title: str = Field(
+        ...,
+        description="Title of the YouTube video.",
+        examples=["Never Gonna Give You Up"],
+    )
+
+    video_duration_seconds: int = Field(
+        ...,
+        description="Duration of the video in seconds.",
+        examples=[212],
+    )
+
+    video_uploader: str = Field(
+        ...,
+        description="Name of the YouTube channel / uploader.",
+        examples=["Rick Astley"],
+    )
+
+    thumbnail_url: str = Field(
+        ...,
+        description="URL of the video thumbnail image.",
+        examples=["https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"],
     )
 
 

@@ -27,3 +27,30 @@ class AnalyzeRequest(BaseModel):
         description='If True, include the raw per-frame chord array in the response. '
                     'Omit by default to keep response size small.',
     )
+
+
+class YoutubeRequest(BaseModel):
+    """Request body for analyzing audio from a YouTube video."""
+
+    url: str = Field(
+        ...,
+        description='The YouTube video URL to analyze. '
+                    'Supported: youtube.com/watch, youtu.be, youtube.com/shorts. '
+                    'Example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"',
+    )
+
+    smooth_method: Literal["hmm", "median"] = Field(
+        default="hmm",
+        description='Which post-processing smoothing method to use.',
+    )
+
+    device: Literal["cpu", "cuda"] = Field(
+        default="cpu",
+        description='Inference device.',
+    )
+
+    include_raw_chords: bool = Field(
+        default=False,
+        description='If True, include the raw per-frame chord array in the response. '
+                    'Omit by default to keep response size small.',
+    )
