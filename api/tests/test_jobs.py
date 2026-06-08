@@ -296,6 +296,7 @@ class TestPipeline:
             get_detector=mock_get_detector,
             smooth_chords=mock_smooth_chords,
             merge_segments=mock_merge_segments,
+            sync_chords_to_beats=mock_sync_chords_to_beats,
             infer_key=mock_infer_key,
             to_roman_numerals=mock_to_roman_numerals,
             extract_progression=mock_extract_progression,
@@ -352,6 +353,7 @@ class TestPipeline:
             get_detector=mock_get_detector,
             smooth_chords=mock_smooth_chords,
             merge_segments=mock_merge_segments,
+            sync_chords_to_beats=mock_sync_chords_to_beats,
             infer_key=mock_infer_key,
             to_roman_numerals=mock_to_roman_numerals,
             extract_progression=mock_extract_progression,
@@ -435,6 +437,11 @@ def mock_merge_segments(chord_labels, times):
     return segments
 
 
+def mock_sync_chords_to_beats(segments, beat_times, sr, hop_length):
+    """Pass through segments unchanged for simplicity."""
+    return segments
+
+
 def mock_infer_key(segments):
     return "C major"
 
@@ -450,12 +457,12 @@ def mock_extract_progression(segments):
     return "I → V → vi → IV"
 
 
-def mock_build_output(segments, key, progression, audio_dict, raw_chords, confidences=None):
+def mock_build_output(segments, key, progression, audio_dict, raw_chords, confidences=None, beats=None):
     """Return a dict matching what build_output normally returns."""
     y = audio_dict["y"]
     sr = audio_dict["sr"]
     duration = float(len(y) / sr)
-    return {
+    result = {
         "key": key,
         "progression": progression,
         "tempo_bpm": 120.0,
@@ -464,6 +471,9 @@ def mock_build_output(segments, key, progression, audio_dict, raw_chords, confid
         "segments": segments,
         "raw_chords": raw_chords,
     }
+    if beats is not None:
+        result["beats"] = [float(t) for t in beats]
+    return result
 
 
 # ============================================================================

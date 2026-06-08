@@ -19,6 +19,7 @@ from engine.postprocess import (
     infer_key,
     to_roman_numerals,
     extract_progression,
+    sync_chords_to_beats,
 )
 from engine.output import build_output
 from api.services.job_store import job_store
@@ -110,6 +111,10 @@ def _run_analysis_stages(
     import numpy as np
     segments = merge_segments(smoothed, np.array(frame_times))
 
+    # ---- Beat synchronization ---------------------------------------------
+    job_store.update_progress(job_id, 85 + progress_offset, "Syncing chords to beats...")
+    segments = sync_chords_to_beats(segments, beat_times, sr, FEATURES["hop_length"])
+
     # ---- Key & progression ------------------------------------------------
     job_store.update_progress(job_id, 88 + progress_offset, "Inferring key and progression...")
     key = infer_key(segments)
@@ -124,6 +129,7 @@ def _run_analysis_stages(
         progression=progression,
         audio_dict=audio_dict,
         raw_chords=list(raw_chords),
+        beats=beat_times,
     )
 
     chord_segments = []

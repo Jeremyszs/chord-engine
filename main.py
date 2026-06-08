@@ -12,10 +12,12 @@ if sys.platform == 'win32':
 
 from engine.loader import load_audio
 from engine.model import load_detector
+import librosa
 from engine.postprocess import (smooth_chords, merge_segments, infer_key,
                                  to_roman_numerals, extract_progression,
                                  refine_boundaries, filter_short_chords,
-                                 merge_consecutive_chords, normalize_chord_label)
+                                 merge_consecutive_chords, normalize_chord_label,
+                                 sync_chords_to_beats)
 from engine.output import build_output, save_output, print_summary
 from config import MODEL, POSTPROCESS
 
@@ -97,7 +99,22 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
         if verbose:
             print(f"  → Created {len(segments)} segments")
 
-        # Step 6.5: Refine boundaries using onset detection
+        # Step 6.5: Beat tracking for timing synchronization
+        log_progress("Detecting beats for timing alignment...")
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, hop_length=512)
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=512)
+        
+        if verbose:
+            print(f"  → Detected {len(beat_times)} beats at {float(np.atleast_1d(tempo)[0]):.1f} BPM")
+
+        # Step 6.6: Sync chord boundaries to beats
+        log_progress("Synchronizing chords to beat grid...")
+        segments = sync_chords_to_beats(segments, beat_times, sr, hop_length)
+        
+        if verbose:
+            print(f"  → Synchronized {len(segments)} segments to beats")
+
+        # Step 6.7: Refine boundaries using onset detection
         log_progress("Refining boundaries with onset detection...")
         segments = refine_boundaries(segments, y, sr, hop_length, max_shift=0.15)
 
@@ -148,7 +165,8 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
             key=key,
             progression=progression,
             audio_dict=audio_dict,
-            raw_chords=raw_chords
+            raw_chords=raw_chords,
+            beats=beat_times
         )
 
         if verbose:

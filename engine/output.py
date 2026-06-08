@@ -7,7 +7,7 @@ from pathlib import Path
 
 def build_output(segments: list[dict], key: str, progression: str,
                  audio_dict: dict, raw_chords: list[str],
-                 confidences: list[float] = None) -> dict:
+                 confidences: list[float] = None, beats: np.ndarray = None) -> dict:
     """
     Build comprehensive output dictionary from chord recognition results.
 
@@ -18,6 +18,7 @@ def build_output(segments: list[dict], key: str, progression: str,
         audio_dict: Dictionary with 'y' (waveform) and 'sr' (sample rate)
         raw_chords: Raw chord predictions before segmentation
         confidences: Optional confidence scores for each segment
+        beats: Optional array of beat times in seconds
 
     Returns:
         Dictionary with complete chord recognition results
@@ -26,10 +27,17 @@ def build_output(segments: list[dict], key: str, progression: str,
     y = audio_dict['y']
     sr = audio_dict['sr']
 
-    # Detect tempo using librosa beat tracking
-    # librosa 2.x returns tempo as a numpy array; handle scalar, 0-d, and 1-d arrays
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-    tempo_bpm = float(np.atleast_1d(tempo)[0])
+    # Calculate tempo from beat intervals if beats provided, else use librosa
+    if beats is not None and len(beats) > 1:
+        # Calculate tempo from mean beat interval
+        beat_intervals = np.diff(beats)
+        mean_interval = np.mean(beat_intervals)
+        tempo_bpm = 60.0 / mean_interval if mean_interval > 0 else 120.0
+    else:
+        # Fallback to librosa beat tracking
+        # librosa 2.x returns tempo as a numpy array; handle scalar, 0-d, and 1-d arrays
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        tempo_bpm = float(np.atleast_1d(tempo)[0])
 
     # Calculate duration
     duration_seconds = float(len(y) / sr)
@@ -66,6 +74,10 @@ def build_output(segments: list[dict], key: str, progression: str,
         "segments": segments,
         "raw_chords": raw_chords
     }
+
+    # Add beats array if provided
+    if beats is not None:
+        result["beats"] = [float(t) for t in beats]
 
     return result
 

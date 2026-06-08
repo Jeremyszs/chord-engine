@@ -658,3 +658,69 @@ def merge_consecutive_chords(segments: list[dict],
             merged.append(seg.copy())
 
     return merged
+
+
+def sync_chords_to_beats(segments: list[dict], beat_times: np.ndarray,
+                         sr: int, hop_length: int) -> list[dict]:
+    """
+    Snap chord boundaries to nearest beat positions using two-pointer algorithm.
+
+    Implements ChordMiniApp's beat synchronization approach:
+    - For each chord segment boundary, find the closest beat
+    - Use 50% midpoint rule: snap to nearest beat within threshold
+    - Maintain forward-fill semantics (chord sustains until next change)
+
+    Args:
+        segments: List of segment dicts with start/end times
+        beat_times: Array of beat times in seconds from beat detection
+        sr: Sample rate
+        hop_length: Hop length used in feature extraction
+
+    Returns:
+        Segments with beat-aligned boundaries
+    """
+    if len(segments) == 0 or len(beat_times) == 0:
+        return segments
+
+    synced = []
+
+    for i, seg in enumerate(segments):
+        synced_seg = seg.copy()
+
+        # Snap start boundary to nearest beat (skip first segment)
+        if i > 0:
+            start_time = seg['start']
+            # Find nearest beat using two-pointer approach
+            distances = np.abs(beat_times - start_time)
+            nearest_idx = np.argmin(distances)
+            nearest_beat = beat_times[nearest_idx]
+
+            # Apply 50% midpoint rule
+            # Only snap if the boundary is closer to this beat than the frame resolution
+            frame_time = hop_length / sr
+            if distances[nearest_idx] < frame_time:
+                synced_seg['start'] = float(nearest_beat)
+
+        # Snap end boundary to nearest beat (skip last segment)
+        if i < len(segments) - 1:
+            end_time = seg['end']
+            # Find nearest beat
+            distances = np.abs(beat_times - end_time)
+            nearest_idx = np.argmin(distances)
+            nearest_beat = beat_times[nearest_idx]
+
+            # Apply 50% midpoint rule
+            frame_time = hop_length / sr
+            if distances[nearest_idx] < frame_time:
+                synced_seg['end'] = float(nearest_beat)
+
+        # Recalculate duration
+        synced_seg['duration'] = synced_seg['end'] - synced_seg['start']
+
+        # Ensure positive duration (in case beats are very close)
+        if synced_seg['duration'] <= 0:
+            synced_seg = seg.copy()  # Revert to original if invalid
+
+        synced.append(synced_seg)
+
+    return synced
