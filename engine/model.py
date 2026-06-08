@@ -374,13 +374,13 @@ def load_detector(device: str = "cpu", large_voca: bool = False,
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             if use_chordmini:
-                raise FileNotFoundError(
-                    f"ChordMini model not found at {checkpoint_path}\n"
-                    f"Please manually download from: https://github.com/ptnghia-j/ChordMini/raw/main/checkpoints/btc_model_best.pth\n"
-                    f"And place it at: {checkpoint_path}"
-                )
-            repo_base = "https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test"
-            url = f"{repo_base}/{checkpoint_name}"
+                # ChordMini BTC-PL model from ptnghia-j/ChordMini repository
+                url = "https://github.com/ptnghia-j/ChordMini/raw/main/checkpoints/btc_model_best.pth"
+            else:
+                # Original BTC models from jayg996/BTC-ISMIR19 repository
+                repo_base = "https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test"
+                url = f"{repo_base}/{checkpoint_name}"
+            
             logger.info("Downloading %s ...", url)
             urllib.request.urlretrieve(url, checkpoint_path)
             logger.info("Downloaded %s successfully (%d bytes).", checkpoint_name, checkpoint_path.stat().st_size)
