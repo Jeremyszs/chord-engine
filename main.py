@@ -21,7 +21,8 @@ from config import MODEL, POSTPROCESS
 
 
 def run_pipeline(audio_path: str, output_path: str, device: str,
-                 smooth_method: str, save_result: bool, verbose: bool) -> int:
+                 smooth_method: str, save_result: bool, verbose: bool,
+                 use_chordmini: bool = False) -> int:
     """
     Run the complete chord recognition pipeline.
 
@@ -58,10 +59,11 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
 
         # Step 2: Load BTC model with large vocabulary
         log_progress("Loading BTC chord recognition model...")
-        detector = load_detector(device=device, large_voca=True)
+        detector = load_detector(device=device, large_voca=True, use_chordmini=use_chordmini)
 
+        model_type = "ChordMini BTC-PL" if use_chordmini else "BTC baseline"
         if verbose:
-            print(f"  → Model loaded on {device} (170-chord vocabulary)")
+            print(f"  → Model loaded on {device} (170-chord vocabulary, {model_type})")
 
         # Step 3: Predict chords with confidence scores
         # Note: BTC model performs its own CQT feature extraction internally
@@ -252,6 +254,12 @@ Examples:
         help='Print progress messages for each step'
     )
 
+    parser.add_argument(
+        '--use-chordmini',
+        action='store_true',
+        help='Use ChordMiniApp\'s superior BTC-PL model (pseudo-labeling + knowledge distillation)'
+    )
+
     args = parser.parse_args()
 
     # Validate audio file exists
@@ -267,7 +275,8 @@ Examples:
         device=args.device,
         smooth_method=args.smooth,
         save_result=not args.no_save,
-        verbose=args.verbose
+        verbose=args.verbose,
+        use_chordmini=args.use_chordmini
     )
 
     sys.exit(exit_code)

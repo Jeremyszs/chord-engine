@@ -89,15 +89,18 @@ class ChordDetector:
     recognition from audio.
     """
 
-    def __init__(self, checkpoint_path: str, device: str = "cpu", large_voca: bool = False):
+    def __init__(self, checkpoint_path: str, device: str = "cpu", 
+                 large_voca: bool = False, is_chordmini: bool = False):
         """
         Initialize the BTC chord detector.
 
         Args:
-            checkpoint_path: Path to BTC model checkpoint (.pt file)
+            checkpoint_path: Path to BTC model checkpoint (.pt or .pth file)
             device: Device to run model on ("cpu" or "cuda")
             large_voca: If True, use large vocabulary (170 chords),
                        otherwise use standard (25 chords: maj/min only)
+            is_chordmini: If True, checkpoint is from ChordMiniApp 
+                         (uses different format: 'model_state_dict' key)
 
         Raises:
             FileNotFoundError: If checkpoint file doesn't exist
@@ -111,6 +114,7 @@ class ChordDetector:
 
         self.device = torch.device(device)
         self.large_voca = large_voca
+        self.is_chordmini = is_chordmini
 
         # Load configuration
         config_path = _btc_model_path / "run_config.yaml"
@@ -131,9 +135,32 @@ class ChordDetector:
         # Load checkpoint
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-            self.mean = checkpoint['mean']
-            self.std = checkpoint['std']
-            self.model.load_state_dict(checkpoint['model'])
+            
+            # Handle different checkpoint formats
+            if is_chordmini:
+                # ChordMini format: {'model_state_dict': ..., 'normalization': {'mean': ..., 'std': ...}}
+                state_dict = checkpoint.get('model_state_dict', checkpoint.get('model', checkpoint))
+                # Remove 'module.' prefix if present (from DataParallel training)
+                if state_dict and next(iter(state_dict)).startswith('module.'):
+                    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                
+                # Extract normalization stats from nested dict
+                normalization = checkpoint.get('normalization', {})
+                self.mean = normalization.get('mean', checkpoint.get('mean', 0.0))
+                self.std = normalization.get('std', checkpoint.get('std', 1.0))
+                
+                # Handle tensor mean/std (ChordMini stores as tensors)
+                if hasattr(self.mean, 'item'):
+                    self.mean = float(self.mean.item())
+                if hasattr(self.std, 'item'):
+                    self.std = float(self.std.item())
+            else:
+                # Original BTC format: {'model': ..., 'mean': ..., 'std': ...}
+                state_dict = checkpoint['model']
+                self.mean = checkpoint['mean']
+                self.std = checkpoint['std']
+            
+            self.model.load_state_dict(state_dict)
             self.model.eval()
         except Exception as e:
             raise RuntimeError(f"Failed to load model checkpoint: {str(e)}")
@@ -301,7 +328,8 @@ class ChordDetector:
         return chords
 
 
-def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetector:
+def load_detector(device: str = "cpu", large_voca: bool = False, 
+                  use_chordmini: bool = False) -> ChordDetector:
     """
     Load BTC chord detector with automatic checkpoint discovery.
 
@@ -314,6 +342,8 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
         device: Device to run model on ("cpu" or "cuda")
         large_voca: If True, load large vocabulary model (170 chords),
                    otherwise load standard model (25 chords)
+        use_chordmini: If True, use ChordMiniApp's superior BTC-PL model
+                      (pseudo-labeling + knowledge distillation trained)
 
     Returns:
         Initialized ChordDetector instance
@@ -322,7 +352,10 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
         FileNotFoundError: If checkpoint file cannot be found or downloaded.
     """
     # Determine checkpoint filename
-    if large_voca:
+    if use_chordmini:
+        checkpoint_name = "btc_model_chordmini.pth"
+        large_voca = True  # ChordMini model always uses 170-chord vocab
+    elif large_voca:
         checkpoint_name = "btc_model_large_voca.pt"
     else:
         checkpoint_name = "btc_model.pt"
@@ -340,6 +373,12 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
         logger.info("Local checkpoint not found at %s — downloading from GitHub.", checkpoint_path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            if use_chordmini:
+                raise FileNotFoundError(
+                    f"ChordMini model not found at {checkpoint_path}\n"
+                    f"Please manually download from: https://github.com/ptnghia-j/ChordMini/raw/main/checkpoints/btc_model_best.pth\n"
+                    f"And place it at: {checkpoint_path}"
+                )
             repo_base = "https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test"
             url = f"{repo_base}/{checkpoint_name}"
             logger.info("Downloading %s ...", url)
@@ -356,7 +395,8 @@ def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetecto
     detector = ChordDetector(
         checkpoint_path=str(checkpoint_path),
         device=device,
-        large_voca=large_voca
+        large_voca=large_voca,
+        is_chordmini=use_chordmini
     )
 
     return detector

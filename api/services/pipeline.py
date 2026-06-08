@@ -32,10 +32,13 @@ _detector = None
 
 
 def get_detector(device: str):
-    """Return the shared BTC detector, loading it on first call."""
+    """Return the shared BTC detector, loading it on first call.
+    
+    Uses ChordMiniApp's superior BTC-PL model by default for best accuracy.
+    """
     global _detector
     if _detector is None:
-        _detector = load_detector(device)
+        _detector = load_detector(device, use_chordmini=True)
     return _detector
 
 
