@@ -235,6 +235,32 @@ class ChordDetector:
 
         return results
 
+    def predict_with_threshold(self, y: np.ndarray, sr: int = 22050, 
+                               confidence_threshold: float = 0.3) -> list[str]:
+        """
+        Predict chord labels, masking low-confidence frames as 'N'.
+        
+        This helps filter out uncertain predictions that may be noise,
+        especially at chord boundaries and during quiet passages.
+        
+        Args:
+            y: Audio waveform (mono)
+            sr: Sample rate (should be 22050 Hz)
+            confidence_threshold: Minimum confidence (0-1) for valid chord.
+                                 Frames below this are labeled 'N' (no chord)
+        
+        Returns:
+            List of chord label strings with low-confidence frames as 'N'
+        """
+        results = self.predict_with_confidence(y, sr)
+        chords = []
+        for r in results:
+            if r['confidence'] < confidence_threshold:
+                chords.append('N')
+            else:
+                chords.append(r['chord'])
+        return chords
+
 
 def load_detector(device: str = "cpu", large_voca: bool = False) -> ChordDetector:
     """

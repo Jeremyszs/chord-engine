@@ -1,5 +1,6 @@
 """Post-processing for chord predictions."""
 import numpy as np
+import librosa
 from scipy import stats
 from collections import Counter, defaultdict
 from hmmlearn import hmm
@@ -59,8 +60,99 @@ def _smooth_median(chord_labels: list[str], window: int = None) -> list[str]:
     return smoothed
 
 
+def _build_musical_transition_matrix(unique_chords: list[str], chord_to_idx: dict) -> np.ndarray:
+    """
+    Build music-theoretic transition matrix based on harmonic relationships.
+    
+    Uses circle of fifths and common chord progressions rather than
+    circular bigram counts from predictions.
+    """
+    n_states = len(unique_chords)
+    transitions = np.ones((n_states, n_states)) * 0.01  # Base small probability
+    
+    # Root to pitch class mapping
+    root_to_pc = {
+        'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
+        'E': 4, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8,
+        'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11
+    }
+    
+    for i, chord_i in enumerate(unique_chords):
+        # Self-transition (chord holds)
+        transitions[i, i] = 0.7
+        
+        # Skip special labels
+        if chord_i in ['N', 'X', '-']:
+            transitions[i, :] = 1.0 / n_states  # Uniform from N/X
+            continue
+        
+        # Parse chord i
+        if ':' in chord_i:
+            root_i, quality_i = chord_i.split(':', 1)
+        else:
+            root_i = chord_i
+            quality_i = 'maj'
+        
+        if root_i not in root_to_pc:
+            continue
+        
+        pc_i = root_to_pc[root_i]
+        
+        # Build transition weights based on interval relationships
+        for j, chord_j in enumerate(unique_chords):
+            if i == j:
+                continue  # Already set self-transition
+            
+            if chord_j in ['N', 'X', '-']:
+                transitions[i, j] = 0.02  # Low probability to silence
+                continue
+            
+            # Parse chord j
+            if ':' in chord_j:
+                root_j, quality_j = chord_j.split(':', 1)
+            else:
+                root_j = chord_j
+                quality_j = 'maj'
+            
+            if root_j not in root_to_pc:
+                continue
+            
+            pc_j = root_to_pc[root_j]
+            
+            # Calculate interval distance
+            interval = (pc_j - pc_i) % 12
+            
+            # Weight based on interval (circle of fifths)
+            if interval == 7:  # Perfect fifth (dominant movement)
+                weight = 0.15
+            elif interval == 5:  # Perfect fourth (subdominant movement)
+                weight = 0.12
+            elif interval == 9:  # Major sixth / relative minor
+                weight = 0.08
+            elif interval == 3:  # Minor third / relative major
+                weight = 0.08
+            elif interval == 2 or interval == 10:  # Stepwise
+                weight = 0.05
+            else:
+                weight = 0.02
+            
+            transitions[i, j] = weight
+    
+    # Normalize rows to sum to 1
+    row_sums = transitions.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1  # Avoid division by zero
+    transitions = transitions / row_sums
+    
+    return transitions
+
+
 def _smooth_hmm(chord_labels: list[str], confidences: list[float] = None) -> list[str]:
-    """Smooth using Hidden Markov Model with Viterbi decoding."""
+    """
+    Smooth using HMM with music-theoretic transitions and confidence-based emissions.
+    
+    This fixes the circular smoothing issue where transitions were built from
+    the predictions themselves. Now uses musical knowledge (circle of fifths).
+    """
     if len(chord_labels) < 2:
         return chord_labels
 
@@ -75,25 +167,36 @@ def _smooth_hmm(chord_labels: list[str], confidences: list[float] = None) -> lis
     # Convert labels to indices
     observations = np.array([chord_to_idx[c] for c in chord_labels])
 
-    # Build transition matrix from bigram counts
-    transitions = np.ones((n_states, n_states))  # Laplace smoothing
-    for i in range(len(observations) - 1):
-        transitions[observations[i], observations[i + 1]] += 1
-
-    # Normalize to probabilities
-    transition_matrix = transitions / transitions.sum(axis=1, keepdims=True)
+    # Build music-theoretic transition matrix
+    transition_matrix = _build_musical_transition_matrix(unique_chords, chord_to_idx)
 
     # Start probability: uniform
     start_prob = np.ones(n_states) / n_states
+
+    # Build emission probabilities from confidences if available
+    if confidences is not None and len(confidences) == len(chord_labels):
+        # Use confidence scores to build emission matrix
+        # High confidence -> strong emission, low confidence -> diffuse
+        emission_matrix = np.zeros((n_states, n_states))
+        for obs_idx, conf in zip(observations, confidences):
+            # Observed state emits itself with probability = confidence
+            emission_matrix[obs_idx, obs_idx] += conf
+            # Distribute remaining probability to other states
+            remaining = 1.0 - conf
+            for other_idx in range(n_states):
+                if other_idx != obs_idx:
+                    emission_matrix[obs_idx, other_idx] += remaining / (n_states - 1)
+        
+        # Normalize
+        emission_matrix = emission_matrix / (emission_matrix.sum(axis=1, keepdims=True) + 1e-10)
+    else:
+        # Fallback: identity-based emissions with noise
+        emission_matrix = np.eye(n_states) * 0.85 + 0.15 / n_states
 
     # Build HMM model
     model = hmm.CategoricalHMM(n_components=n_states)
     model.startprob_ = start_prob
     model.transmat_ = transition_matrix
-
-    # Emission probabilities: identity matrix (each state emits itself)
-    # with some noise for robustness
-    emission_matrix = np.eye(n_states) * 0.9 + 0.1 / n_states
     model.emissionprob_ = emission_matrix
 
     # Decode using Viterbi algorithm
@@ -159,6 +262,72 @@ def merge_segments(chord_labels: list[str], times: np.ndarray) -> list[dict]:
     })
 
     return segments
+
+
+def refine_boundaries(segments: list[dict], y: np.ndarray, sr: int, 
+                      hop_length: int, max_shift: float = 0.15) -> list[dict]:
+    """
+    Snap chord boundaries to nearest onset positions for better timing accuracy.
+    
+    Uses librosa's onset detector to find note attack positions, then aligns
+    each segment boundary to the nearest onset within max_shift seconds.
+    This fixes timing drift caused by fixed-frame boundaries.
+    
+    Args:
+        segments: List of segment dicts with start/end times
+        y: Audio waveform (for onset detection)
+        sr: Sample rate
+        hop_length: Hop length used in feature extraction
+        max_shift: Maximum boundary adjustment in seconds (default 0.15)
+    
+    Returns:
+        Segments with refined boundaries snapped to onsets
+    """
+    if len(segments) == 0:
+        return segments
+    
+    # Detect onsets in the audio
+    onset_frames = librosa.onset.onset_detect(
+        y=y, sr=sr, hop_length=hop_length, backtrack=True
+    )
+    onset_times = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop_length)
+    
+    if len(onset_times) == 0:
+        return segments  # No onsets detected, return unchanged
+    
+    refined = []
+    for i, seg in enumerate(segments):
+        refined_seg = seg.copy()
+        
+        # Refine start boundary (skip first segment's start)
+        if i > 0:
+            start_time = seg['start']
+            # Find nearest onset to start boundary
+            distances = np.abs(onset_times - start_time)
+            nearest_idx = np.argmin(distances)
+            nearest_onset = onset_times[nearest_idx]
+            
+            # Only snap if within max_shift threshold
+            if distances[nearest_idx] < max_shift:
+                refined_seg['start'] = float(nearest_onset)
+        
+        # Refine end boundary (skip last segment's end)
+        if i < len(segments) - 1:
+            end_time = seg['end']
+            # Find nearest onset to end boundary
+            distances = np.abs(onset_times - end_time)
+            nearest_idx = np.argmin(distances)
+            nearest_onset = onset_times[nearest_idx]
+            
+            # Only snap if within max_shift threshold
+            if distances[nearest_idx] < max_shift:
+                refined_seg['end'] = float(nearest_onset)
+        
+        # Recalculate duration
+        refined_seg['duration'] = refined_seg['end'] - refined_seg['start']
+        refined.append(refined_seg)
+    
+    return refined
 
 
 # Krumhansl-Schmuckler key profiles (from cognitive psychology research)

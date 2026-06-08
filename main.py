@@ -12,7 +12,7 @@ if sys.platform == 'win32':
 
 from engine.loader import load_audio
 from engine.model import load_detector
-from engine.postprocess import smooth_chords, merge_segments, infer_key, to_roman_numerals, extract_progression
+from engine.postprocess import smooth_chords, merge_segments, infer_key, to_roman_numerals, extract_progression, refine_boundaries
 from engine.output import build_output, save_output, print_summary
 from config import MODEL, POSTPROCESS
 
@@ -33,7 +33,7 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    total_steps = 10
+    total_steps = 11  # Updated from 10 to include boundary refinement
     current_step = 0
 
     def log_progress(message: str):
@@ -53,21 +53,24 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
         if verbose:
             print(f"  → Loaded {audio_dict['duration']:.2f}s audio at {sr} Hz")
 
-        # Step 2: Load BTC model
+        # Step 2: Load BTC model with large vocabulary
         log_progress("Loading BTC chord recognition model...")
-        detector = load_detector(device=device)
+        detector = load_detector(device=device, large_voca=True)
 
         if verbose:
-            print(f"  → Model loaded on {device}")
+            print(f"  → Model loaded on {device} (170-chord vocabulary)")
 
-        # Step 3: Predict chords
+        # Step 3: Predict chords with confidence scores
         # Note: BTC model performs its own CQT feature extraction internally
         # (144-bin CQT with hop_length=2048), so we pass raw audio directly
         log_progress("Running chord recognition (this may take a moment)...")
-        raw_chords = detector.predict(y, sr)
+        predictions = detector.predict_with_confidence(y, sr)
+        raw_chords = [p['chord'] for p in predictions]
+        confidences = [p['confidence'] for p in predictions]
 
         if verbose:
-            print(f"  → Predicted {len(raw_chords)} chord frames")
+            avg_conf = sum(confidences) / len(confidences) if confidences else 0
+            print(f"  → Predicted {len(raw_chords)} chord frames (avg confidence: {avg_conf:.3f})")
 
         # Step 4: Calculate frame times
         # BTC uses hop_length from MODEL config
@@ -75,9 +78,9 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
         hop_length = MODEL["hop_length"]
         frame_times = np.array([i * hop_length / sr for i in range(len(raw_chords))])
 
-        # Step 5: Smooth predictions
+        # Step 5: Smooth predictions with confidence-aware HMM
         log_progress(f"Smoothing predictions ({smooth_method} method)...")
-        smoothed_chords = smooth_chords(raw_chords, method=smooth_method)
+        smoothed_chords = smooth_chords(raw_chords, method=smooth_method, confidences=confidences)
 
         if verbose:
             print(f"  → Smoothed {len(smoothed_chords)} frames")
@@ -88,6 +91,13 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
 
         if verbose:
             print(f"  → Created {len(segments)} segments")
+
+        # Step 6.5: Refine boundaries using onset detection
+        log_progress("Refining boundaries with onset detection...")
+        segments = refine_boundaries(segments, y, sr, hop_length, max_shift=0.15)
+
+        if verbose:
+            print(f"  → Refined {len(segments)} segment boundaries")
 
         # Step 7: Infer key
         log_progress("Detecting musical key...")
