@@ -10,8 +10,9 @@ AUDIO = {
 
 # Feature extraction parameters
 FEATURES = {
-    "hop_length": 2048,  # BTC model uses 2048
-    "bins_per_octave": 24,  # BTC model uses 24
+    "hop_length": 2048,        # BTC model uses 2048
+    "bins_per_octave": 24,     # BTC model uses 24
+    "n_bins": 144,             # BTC model uses 144 (24 * 6 octaves)
     "use_hpss": True,
 }
 

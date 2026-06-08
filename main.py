@@ -12,7 +12,10 @@ if sys.platform == 'win32':
 
 from engine.loader import load_audio
 from engine.model import load_detector
-from engine.postprocess import smooth_chords, merge_segments, infer_key, to_roman_numerals, extract_progression, refine_boundaries
+from engine.postprocess import (smooth_chords, merge_segments, infer_key,
+                                 to_roman_numerals, extract_progression,
+                                 refine_boundaries, filter_short_chords,
+                                 merge_consecutive_chords, normalize_chord_label)
 from engine.output import build_output, save_output, print_summary
 from config import MODEL, POSTPROCESS
 
@@ -33,7 +36,7 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    total_steps = 11  # Updated from 10 to include boundary refinement
+    total_steps = 14  # Updated for new post-processing steps
     current_step = 0
 
     def log_progress(message: str):
@@ -98,6 +101,25 @@ def run_pipeline(audio_path: str, output_path: str, device: str,
 
         if verbose:
             print(f"  → Refined {len(segments)} segment boundaries")
+
+        # Step 6.6: Normalize chord labels (unicode flats/sharps, quality format)
+        log_progress("Normalizing chord labels...")
+        for seg in segments:
+            seg['chord'] = normalize_chord_label(seg['chord'])
+
+        # Step 6.7: Filter short segments (< 100ms spurious noise)
+        log_progress("Filtering short chord segments...")
+        segments = filter_short_chords(segments, min_duration=0.1)
+
+        if verbose:
+            print(f"  → After filtering: {len(segments)} segments")
+
+        # Step 6.8: Merge consecutive same-chord segments with small gaps
+        log_progress("Merging consecutive same-chord segments...")
+        segments = merge_consecutive_chords(segments, tolerance=0.01)
+
+        if verbose:
+            print(f"  → After merging: {len(segments)} segments")
 
         # Step 7: Infer key
         log_progress("Detecting musical key...")

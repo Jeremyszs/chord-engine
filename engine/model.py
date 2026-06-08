@@ -48,6 +48,39 @@ def extract_btc_features(y: np.ndarray, sr: int, config: dict) -> np.ndarray:
     return feature
 
 
+def _gaussian_kernel_1d(width: int, sigma: float) -> np.ndarray:
+    """Create 1D Gaussian kernel for smoothing."""
+    kernel = np.exp(-0.5 * ((np.arange(width) - width // 2) / sigma) ** 2)
+    kernel /= kernel.sum()
+    return kernel
+
+
+def gaussian_smooth_logits(logits: np.ndarray, width: int = 5,
+                           sigma: float = None) -> np.ndarray:
+    """
+    Smooth each logit channel independently with 1D Gaussian kernel.
+
+    Applied before softmax/argmax to reduce frame-level noise while
+    preserving chord boundaries. Each class channel is convolved with
+    a Gaussian kernel along the time axis.
+
+    Args:
+        logits: Raw model outputs, shape (T, n_classes)
+        width: Kernel width in frames (default 5)
+        sigma: Gaussian sigma (default width/6)
+
+    Returns:
+        Smoothed logits, same shape as input
+    """
+    if sigma is None:
+        sigma = width / 6.0
+    kernel = _gaussian_kernel_1d(width, sigma)
+    smoothed = np.zeros_like(logits)
+    for c in range(logits.shape[1]):
+        smoothed[:, c] = np.convolve(logits[:, c], kernel, mode='same')
+    return smoothed
+
+
 class ChordDetector:
     """
     Wrapper for BTC (Bidirectional Transformer for Chord Recognition) model.
@@ -213,10 +246,16 @@ class ChordDetector:
                 self_attn_output, _ = self.model.self_attn_layers(chunk)
 
                 # Get raw logits from output layer
-                # We need to access the layer directly to get probabilities
                 logits = self.model.output_layer.output_projection(self_attn_output)
-                probs = torch.softmax(logits, dim=-1)
-                probs = probs.squeeze().cpu().numpy()
+                logits_np = logits.squeeze().cpu().numpy()
+
+                # Apply Gaussian smoothing on logits pre-softmax
+                # Reduces frame-level noise while preserving chord boundaries
+                logits_np = gaussian_smooth_logits(logits_np, width=5, sigma=5/6)
+
+                # Compute softmax probabilities
+                exp_logits = np.exp(logits_np - logits_np.max(axis=-1, keepdims=True))
+                probs = exp_logits / exp_logits.sum(axis=-1, keepdims=True)
 
                 # Get predictions
                 prediction = np.argmax(probs, axis=-1)

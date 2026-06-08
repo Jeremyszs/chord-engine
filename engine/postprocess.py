@@ -553,3 +553,108 @@ def extract_progression(segments: list[dict]) -> str:
             unique_progression.append(num)
 
     return " -> ".join(unique_progression[:8])  # Limit to first 8 for readability
+
+
+def normalize_chord_label(chord: str) -> str:
+    """
+    Clean and normalize a chord label to standard form.
+
+    Normalizations:
+        - Unicode flat (♭) → 'b'
+        - Unicode sharp (♯) → '#'
+        - Strip leading/trailing whitespace
+        - Normalize 'min' variations to 'min'
+        - Normalize 'maj' to bare root (e.g. 'C:maj' → 'C')
+
+    Args:
+        chord: Raw chord label string
+
+    Returns:
+        Normalized chord label
+    """
+    chord = chord.strip()
+    chord = chord.replace('♭', 'b').replace('♯', '#')
+
+    # Normalize quality suffixes
+    if ':' in chord:
+        root, quality = chord.split(':', 1)
+        quality = quality.strip()
+        if quality in ('maj', 'M', ''):
+            return root  # bare root = major
+        if quality in ('min', 'm', 'minor'):
+            quality = 'min'
+        return f'{root}:{quality}'
+
+    return chord
+
+
+def filter_short_chords(segments: list[dict],
+                         min_duration: float = 0.1) -> list[dict]:
+    """
+    Remove segments shorter than min_duration, merging them into neighbors.
+
+    Short segments are usually spurious noise predictions. Each short segment
+    is merged into the longer adjacent neighbor to preserve continuous coverage
+    with no gaps.
+
+    Args:
+        segments: List of segment dicts with chord/start/end/duration
+        min_duration: Minimum segment duration in seconds (default 0.1)
+
+    Returns:
+        Filtered segments with short ones merged into neighbors
+    """
+    if not segments:
+        return []
+
+    # First pass: collect non-short segments
+    kept = []
+    for seg in segments:
+        if seg['duration'] >= min_duration:
+            kept.append(seg.copy())
+        elif kept:
+            # Merge short into previous neighbor
+            kept[-1]['end'] = seg['end']
+            kept[-1]['duration'] = kept[-1]['end'] - kept[-1]['start']
+
+    # Handle case where first segment(s) are short (no previous to merge into):
+    # absorb them into the first non-short segment by adjusting its start
+    if kept and kept[0]['start'] > segments[0]['start']:
+        kept[0]['start'] = segments[0]['start']
+        kept[0]['duration'] = kept[0]['end'] - kept[0]['start']
+
+    # If all segments were short, return the longest one
+    if not kept:
+        longest = max(segments, key=lambda s: s['duration'])
+        return [longest.copy()]
+
+    return kept
+
+
+def merge_consecutive_chords(segments: list[dict],
+                              tolerance: float = 0.01) -> list[dict]:
+    """
+    Merge adjacent segments with same chord when boundary gap is below tolerance.
+
+    Args:
+        segments: List of segment dicts
+        tolerance: Max gap in seconds to consider for merging (default 0.01)
+
+    Returns:
+        Merged segment list
+    """
+    if len(segments) < 2:
+        return segments
+
+    merged = [segments[0].copy()]
+    for seg in segments[1:]:
+        prev = merged[-1]
+        gap = seg['start'] - prev['end']
+        if seg['chord'] == prev['chord'] and gap >= 0 and gap <= tolerance:
+            # Merge: extend previous segment
+            prev['end'] = seg['end']
+            prev['duration'] = prev['end'] - prev['start']
+        else:
+            merged.append(seg.copy())
+
+    return merged
